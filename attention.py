@@ -123,6 +123,44 @@ class Attention(nn.Module):
 
     return y
 
+class MLP(nn.Module):
+
+    def __init__(self, config):
+        super().__init__()
+        self.c_fc    = nn.Linear(config.n_embd, 4 * config.n_embd, bias=config.bias)
+        self.c_proj  = nn.Linear(4 * config.n_embd, config.n_embd, bias=config.bias)
+        self.dropout = nn.Dropout(config.dropout)
+
+    def forward(self, x):
+        x = self.c_fc(x)
+        x = new_gelu(x)
+        x = self.c_proj(x)
+        x = self.dropout(x)
+        return x
+
+class Block(nn.Module):
+
+    def __init__(self, mesh, config):
+        super().__init__()
+        self.ln_1 = LayerNorm(mesh, config.n_embd, bias=config.bias)
+        self.attn = Attention(mesh, config)
+        self.ln_2 = LayerNorm(mesh, config.n_embd, bias=config.bias)
+        self.mlp = MLP(config)
+        self.mesh = mesh
+
+    def forward(self, x):
+        #print('X', x) # regular
+        #print('Attn', self.attn(self.ln_1(x)))
+        x = distribute_tensor(x, device_mesh=self.mesh, placements=[Replicate()])
+        x = x + self.attn(self.ln_1(x))
+        #print('X', x) # regular
+        #print('MLP', self.mlp(self.ln_2(x)))
+        ln_2 = distribute_tensor(self.ln_2(x), device_mesh=self.mesh, placements=[Replicate()])
+        mlp = distribute_tensor(self.mlp(ln_2), device_mesh=self.mesh, placements=[Replicate()])
+        x = x + mlp
+        #x = x + self.mlp(self.ln_2(x))
+        return x
+
 
 _rank = int(os.getenv('RANK'))
 device = f'cuda:{_rank}'
@@ -170,6 +208,10 @@ parallelize_module(model, mesh, {'q': ColwiseParallel(),
                                  'k': ColwiseParallel(),
                                  'v': ColwiseParallel(),
                                  'o': ColwiseParallel()})
+
+# for MLP
+#parallelize_module(block, mesh, {'mlp.c_fc': ColwiseParallel(),
+#                                 'mlp.c_proj': ColwiseParallel()})
 
 #for name, module in model.named_modules():
 #  if name in ['k', 'q', 'v', 'o']:
